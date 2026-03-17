@@ -17,7 +17,7 @@ import fitz  # PyMuPDF
 import numpy as np
 import requests
 from paddleocr import PaddleOCR
-from PIL import Image
+from PIL import Image, ImageDraw
 
 
 DEFAULT_PROMPT = (
@@ -215,6 +215,96 @@ def extract_first_json_object(text: str) -> dict[str, Any] | None:
         return None
 
 
+def coerce_confidence(value: Any, default: float = 0.0) -> float:
+    """Convert confidence-like values to [0, 1] float."""
+    try:
+        conf = float(value)
+    except (TypeError, ValueError):
+        conf = default
+    return max(0.0, min(1.0, conf))
+
+
+def validate_structured_crop_ocr(data: Any) -> dict[str, Any] | None:
+    """Validate and normalize structured crop OCR JSON."""
+    if not isinstance(data, dict):
+        return None
+
+    transcription = data.get("transcription")
+    cells = data.get("cells", [])
+    if not isinstance(transcription, str):
+        return None
+    if not isinstance(cells, list):
+        return None
+
+    normalized_cells: list[dict[str, Any]] = []
+    for cell in cells:
+        if not isinstance(cell, dict):
+            continue
+        text = str(cell.get("text", "")).strip()
+        if not text:
+            continue
+        alternatives_raw = cell.get("alternatives", [])
+        alternatives: list[dict[str, Any]] = []
+        if isinstance(alternatives_raw, list):
+            for alt in alternatives_raw:
+                if not isinstance(alt, dict):
+                    continue
+                alt_text = str(alt.get("text", "")).strip()
+                if not alt_text:
+                    continue
+                alternatives.append(
+                    {
+                        "text": alt_text,
+                        "confidence": coerce_confidence(alt.get("confidence", 0.0)),
+                    }
+                )
+
+        normalized_cells.append(
+            {
+                "text": text,
+                "confidence": coerce_confidence(cell.get("confidence", 0.0)),
+                "reason": str(cell.get("reason", "")).strip(),
+                "alternatives": alternatives,
+                "row": cell.get("row"),
+                "col": cell.get("col"),
+            }
+        )
+
+    low_conf = data.get("low_confidence")
+    normalized = {
+        "transcription": transcription.strip(),
+        "cells": normalized_cells,
+        "low_confidence": bool(low_conf) if isinstance(low_conf, bool) else False,
+    }
+    return normalized
+
+
+def render_cells_text(cells: list[dict[str, Any]]) -> str:
+    """Render ordered text from structured OCR cells."""
+    if not cells:
+        return ""
+
+    def key_fn(cell: dict[str, Any]) -> tuple[int, int]:
+        row = cell.get("row")
+        col = cell.get("col")
+        row_i = int(row) if isinstance(row, int) else 10**9
+        col_i = int(col) if isinstance(col, int) else 10**9
+        return row_i, col_i
+
+    ordered = sorted(cells, key=key_fn)
+    return "\n".join(str(c.get("text", "")).strip() for c in ordered if str(c.get("text", "")).strip())
+
+
+def mean_confidence(cells: list[dict[str, Any]]) -> float:
+    """Compute mean confidence across structured cells."""
+    if not cells:
+        return 0.0
+    vals = [coerce_confidence(c.get("confidence", 0.0)) for c in cells]
+    if not vals:
+        return 0.0
+    return sum(vals) / float(len(vals))
+
+
 def clamp_bbox(
     x1: float,
     y1: float,
@@ -257,6 +347,28 @@ def render_pdf_crop_by_normalized_bbox(
     mat = fitz.Matrix(scale, scale)
     pix = page.get_pixmap(matrix=mat, clip=clip, alpha=False)
     return Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+
+
+def make_lowres_context_with_bbox(
+    page_image: Image.Image,
+    bbox: tuple[float, float, float, float],
+    max_side: int = 900,
+) -> Image.Image:
+    """Create low-res context image with visible colored rectangle for zoom location."""
+    x1, y1, x2, y2 = bbox
+    preview = resize_for_vision(page_image, max_side=max_side).copy()
+    draw = ImageDraw.Draw(preview)
+    w, h = preview.size
+
+    px1 = int(x1 * w)
+    py1 = int(y1 * h)
+    px2 = int(x2 * w)
+    py2 = int(y2 * h)
+
+    # Two-pass border improves visibility on light and dark backgrounds.
+    draw.rectangle([px1, py1, px2, py2], outline=(0, 0, 0), width=6)
+    draw.rectangle([px1, py1, px2, py2], outline=(255, 220, 0), width=3)
+    return preview
 
 
 def propose_zoom_regions(
@@ -347,17 +459,26 @@ def synthesize_page_text_with_refinements(
 ) -> str:
     """Merge coarse OCR text and region refinements into a final page transcription."""
     refinement_lines = []
+    refinement_images: list[str] = []
     for idx, item in enumerate(refinements, start=1):
         bbox = item["bbox"]
         reason = str(item.get("reason", ""))
         text = str(item.get("text", "")).strip()
+        has_ctx = bool(item.get("context_image_b64"))
+        has_crop = bool(item.get("crop_image_b64"))
         refinement_lines.append(
-            f"Region {idx} bbox={bbox} raison={reason}\n{text}"
+            f"Region {idx} bbox={bbox} raison={reason} images_pair={has_ctx and has_crop}\n{text}"
         )
+        # Keep order: for each region -> context image with box, then crop image.
+        if has_ctx:
+            refinement_images.append(str(item["context_image_b64"]))
+        if has_crop:
+            refinement_images.append(str(item["crop_image_b64"]))
 
     merge_prompt = (
         "Produis une transcription OCR corrigee unique pour cette page. "
         "Utilise l'OCR brouillon comme base et corrige les erreurs avec les raffinements regionaux. "
+        "Fact-check le positionnement avec les paires d'images associees a chaque region (contexte puis zoom). "
         "Retourne uniquement le texte final corrige, sans explication.\n\n"
         "OCR BROUILLON :\n"
         f"{coarse_text}\n\n"
@@ -373,6 +494,7 @@ def synthesize_page_text_with_refinements(
         show_thinking=show_thinking,
         metrics=metrics,
         call_label="zoom_synthesis",
+        images=refinement_images if refinement_images else None,
     )
 
 
@@ -403,7 +525,8 @@ def call_ollama_ocr_on_image(
                 "content": (
                     "Tu es un moteur OCR. Extrais tout le texte visible de l'image. "
                     "Respecte autant que possible l'ordre de lecture d'origine. "
-                    "Retourne uniquement le texte extrait brut, sans commentaire."
+                    "Retourne uniquement le texte extrait brut, sans commentaire. "
+                    "S'il n'y a aucun texte lisible, retourne une chaine vide."
                 ),
             },
             {
@@ -471,6 +594,95 @@ def call_ollama_ocr_on_image(
             time.sleep(min(2 * attempt, 8))
 
 
+def call_ollama_structured_crop_ocr(
+    ollama_url: str,
+    model: str,
+    image: Image.Image,
+    context_image_with_box: Image.Image,
+    connect_timeout_s: int,
+    read_timeout_s: int,
+    max_image_side: int,
+    metrics: dict[str, Any],
+    previous_attempt: dict[str, Any] | None,
+) -> dict[str, Any] | None:
+    """Call vision model for strict JSON OCR on a crop."""
+    base = ollama_url.rstrip("/")
+    endpoint = f"{base}/api/chat"
+    prepared_image = resize_for_vision(image, max_side=max_image_side)
+    image_b64 = image_to_base64_png(prepared_image)
+    context_b64 = image_to_base64_png(context_image_with_box)
+
+    retry_hint = ""
+    if previous_attempt is not None:
+        prev_text = str(previous_attempt.get("transcription", "")).strip()
+        retry_hint = (
+            "Tentative precedente (a corriger si necessaire):\n"
+            f"{prev_text[:2000]}\n"
+            "Ameliore la precision sur les valeurs numeriques ambiguës.\n"
+        )
+
+    schema_hint = (
+        '{"transcription":"...",'
+        '"cells":[{"row":1,"col":1,"text":"...","confidence":0.93,'
+        '"reason":"...","alternatives":[{"text":"...","confidence":0.42}]}],'
+        '"low_confidence":false}'
+    )
+
+    payload = {
+        "model": model,
+        "stream": False,
+        "messages": [
+            {
+                "role": "system",
+                "content": (
+                    "Tu es un moteur OCR de precision. "
+                    "Tu dois retourner UNIQUEMENT du JSON valide. "
+                    "Pas de markdown, pas d'explication hors JSON."
+                ),
+            },
+            {
+                "role": "user",
+                "content": (
+                    "Lis ce crop d'image et retourne une sortie structuree. "
+                    "Image 1: contexte basse resolution avec un cadre colore indiquant la zone zoomee. "
+                    "Image 2: zoom haute resolution de cette zone. "
+                    "Si la zone ressemble a un tableau numerique, fournis row/col correctement. "
+                    "Chaque cellule doit inclure confidence (0..1), reason court et alternatives en cas d'ambiguite. "
+                    "Si aucun texte lisible n'est present, retourne explicitement: "
+                    '{"transcription":"","cells":[],"low_confidence":false}. '
+                    "Schema JSON strict attendu:\n"
+                    f"{schema_hint}\n\n"
+                    f"{retry_hint}"
+                    "Important: sortie JSON uniquement."
+                ),
+                "images": [context_b64, image_b64],
+            },
+        ],
+    }
+
+    start = time.perf_counter()
+    response = requests.post(
+        endpoint,
+        json=payload,
+        timeout=(connect_timeout_s, read_timeout_s),
+    )
+    response.raise_for_status()
+    metrics_inc(metrics, "structured_crop_calls")
+    metrics_add_time(metrics, "structured_crop_seconds", time.perf_counter() - start)
+
+    raw = str(response.json().get("message", {}).get("content", "")).strip()
+    parsed = extract_first_json_object(raw)
+    if parsed is None:
+        metrics_inc(metrics, "structured_crop_invalid_json")
+        return None
+
+    validated = validate_structured_crop_ocr(parsed)
+    if validated is None:
+        metrics_inc(metrics, "structured_crop_invalid_schema")
+        return None
+    return validated
+
+
 def extract_text_by_page_with_qwen_ocr(
     pdf_path: Path,
     pages: list[int] | None,
@@ -488,6 +700,8 @@ def extract_text_by_page_with_qwen_ocr(
     max_zoom_requests_per_page: int,
     zoom_min_box_size: float,
     zoom_max_total_area: float,
+    structured_crop_attempts: int,
+    structured_confidence_threshold: float,
     metrics: dict[str, Any],
 ) -> list[dict[str, str]]:
     """Run OCR for selected pages using a vision-capable Ollama model."""
@@ -553,25 +767,90 @@ def extract_text_by_page_with_qwen_ocr(
                     bbox=(x1, y1, x2, y2),
                     dpi=zoom_crop_dpi,
                 )
-                crop_text = call_ollama_ocr_on_image(
-                    ollama_url=ollama_url,
-                    model=ocr_model,
-                    image=crop,
-                    connect_timeout_s=connect_timeout_s,
-                    read_timeout_s=read_timeout_s,
-                    retries=retries,
-                    max_image_side=max_image_side,
-                    stream=stream,
-                    show_thinking=show_thinking,
-                    metrics=metrics,
+                context_box_image = make_lowres_context_with_bbox(
+                    page_image=image,
+                    bbox=(x1, y1, x2, y2),
                 )
+                structured_best: dict[str, Any] | None = None
+                current_dpi = zoom_crop_dpi
+                for attempt_idx in range(max(1, structured_crop_attempts)):
+                    if attempt_idx > 0:
+                        # Re-render at higher DPI for difficult regions.
+                        current_dpi += 120
+                        crop = render_pdf_crop_by_normalized_bbox(
+                            page=page,
+                            bbox=(x1, y1, x2, y2),
+                            dpi=current_dpi,
+                        )
+                        metrics_inc(metrics, "structured_crop_rerequests")
+
+                    structured_try = call_ollama_structured_crop_ocr(
+                        ollama_url=ollama_url,
+                        model=ocr_model,
+                        image=crop,
+                        context_image_with_box=context_box_image,
+                        connect_timeout_s=connect_timeout_s,
+                        read_timeout_s=read_timeout_s,
+                        max_image_side=max_image_side,
+                        metrics=metrics,
+                        previous_attempt=structured_best,
+                    )
+                    if structured_try is None:
+                        continue
+
+                    structured_best = structured_try
+                    conf = mean_confidence(structured_try.get("cells", []))
+                    low_conf = bool(structured_try.get("low_confidence", False))
+                    metrics_add_time(metrics, "structured_crop_mean_confidence_sum", conf)
+                    metrics_inc(metrics, "structured_crop_mean_confidence_count")
+                    if conf >= structured_confidence_threshold and not low_conf:
+                        break
+
+                if structured_best is not None:
+                    text_from_cells = render_cells_text(structured_best.get("cells", []))
+                    crop_text = (
+                        structured_best.get("transcription", "").strip()
+                        or text_from_cells.strip()
+                    )
+                    if not crop_text:
+                        crop_text = call_ollama_ocr_on_image(
+                            ollama_url=ollama_url,
+                            model=ocr_model,
+                            image=crop,
+                            connect_timeout_s=connect_timeout_s,
+                            read_timeout_s=read_timeout_s,
+                            retries=retries,
+                            max_image_side=max_image_side,
+                            stream=stream,
+                            show_thinking=show_thinking,
+                            metrics=metrics,
+                        )
+                        metrics_inc(metrics, "structured_crop_fallback_plain_ocr")
+                else:
+                    crop_text = call_ollama_ocr_on_image(
+                        ollama_url=ollama_url,
+                        model=ocr_model,
+                        image=crop,
+                        connect_timeout_s=connect_timeout_s,
+                        read_timeout_s=read_timeout_s,
+                        retries=retries,
+                        max_image_side=max_image_side,
+                        stream=stream,
+                        show_thinking=show_thinking,
+                        metrics=metrics,
+                    )
+                    metrics_inc(metrics, "structured_crop_fallback_plain_ocr")
                 metrics_inc(metrics, "zoom_crop_ocr_calls")
                 metrics_add_time(metrics, "zoom_crop_ocr_seconds", time.perf_counter() - crop_start)
+                context_box_b64 = image_to_base64_png(context_box_image)
+                crop_b64 = image_to_base64_png(crop)
                 refinements.append(
                     {
                         "bbox": [x1, y1, x2, y2],
                         "reason": str(region.get("reason", "")),
                         "text": crop_text,
+                        "context_image_b64": context_box_b64,
+                        "crop_image_b64": crop_b64,
                     }
                 )
                 total_area += area
@@ -625,10 +904,15 @@ def call_ollama(
     show_thinking: bool,
     metrics: dict[str, Any],
     call_label: str,
+    images: list[str] | None = None,
 ) -> str:
     """Call Ollama /api/chat and return assistant content."""
     base = ollama_url.rstrip("/")
     endpoint = f"{base}/api/chat"
+    user_message: dict[str, Any] = {"role": "user", "content": content}
+    if images:
+        user_message["images"] = images
+
     payload = {
         "model": model,
         "stream": stream,
@@ -640,7 +924,7 @@ def call_ollama(
                     "Sois précis et structure la réponse en Markdown."
                 ),
             },
-            {"role": "user", "content": content},
+            user_message,
         ],
     }
     start = time.perf_counter()
@@ -789,8 +1073,8 @@ def main() -> None:
     parser.add_argument(
         "--dpi",
         type=int,
-        default=200,
-        help="Rendering DPI for PDF pages (default: 200)",
+        default=600,
+        help="Rendering DPI for PDF pages (default: 600)",
     )
     parser.add_argument(
         "--lang",
@@ -824,8 +1108,8 @@ def main() -> None:
     parser.add_argument(
         "--qwen-max-image-side",
         type=int,
-        default=1400,
-        help="Max page image side (pixels) sent to qwen OCR (default: 1400)",
+        default=6000,
+        help="Max page image side (pixels) sent to qwen OCR (default: 6000)",
     )
     parser.add_argument(
         "--stream",
@@ -870,6 +1154,18 @@ def main() -> None:
         type=float,
         default=0.45,
         help="Maximum cumulative normalized zoom area per page (default: 0.45)",
+    )
+    parser.add_argument(
+        "--structured-crop-attempts",
+        type=int,
+        default=2,
+        help="Maximum structured OCR attempts per zoom crop (default: 2)",
+    )
+    parser.add_argument(
+        "--structured-confidence-threshold",
+        type=float,
+        default=0.8,
+        help="Mean confidence threshold to stop crop re-requests (default: 0.8)",
     )
 
     args = parser.parse_args()
@@ -918,6 +1214,8 @@ def main() -> None:
             max_zoom_requests_per_page=args.max_zoom_requests_per_page,
             zoom_min_box_size=args.zoom_min_box_size,
             zoom_max_total_area=args.zoom_max_total_area,
+            structured_crop_attempts=args.structured_crop_attempts,
+            structured_confidence_threshold=args.structured_confidence_threshold,
             metrics=metrics,
         )
     else:
