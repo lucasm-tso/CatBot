@@ -6,7 +6,8 @@ This app recursively scans a folder for PDF files, converts each PDF to markdown
 - `<pdf_stem>_summary.md` beside each source PDF
 - `_batch_conversion_summary_<YYYYMMDD_HHMMSS>.md` in the scanned root folder
 
-The implementation reuses the validated conversion flow from `pdf_to_ollama_md/run_pdf_to_md.py`.
+The implementation is standalone and self-contained inside `DataSet_adapter/src`.
+It uses structured internal modules for OCR, Ollama calls, markdown generation, batching, and reporting.
 
 ## Setup
 ```bash

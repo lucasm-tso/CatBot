@@ -23,7 +23,9 @@ from PIL import Image, ImageDraw
 DEFAULT_PROMPT = (
     "Retranscrit ce document en format mark down. Sois aussi fidèle que possible au contenu et à la structure du document original. "
     "Si tu ne comprends pas une partie du document, fais de ton mieux pour la retranscrire de manière lisible et structurée. "
-    "Ne saute aucune partie du document, même si elle est difficile à lire, et utilise l'outil OCR pour les zones de faible confiance."
+    "Ne saute aucune partie du document, même si elle est difficile à lire, et utilise l'outil OCR pour les zones de faible confiance. "
+    "Si le document contient des dessins techniques (schémas, plans, coupes, vues annotées, tableaux de cotes, légendes), décris-les le plus fidèlement possible en Markdown: "
+    "liste les éléments visibles, les étiquettes, les dimensions/valeurs, les relations spatiales, les repères d'axes et les unités sans inventer d'information absente."
 )
 
 

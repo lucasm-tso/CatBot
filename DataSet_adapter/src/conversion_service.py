@@ -6,10 +6,10 @@ import time
 from pathlib import Path
 
 from .config import AppConfig
-from .legacy_bridge import load_legacy_module
+from .markdown_service import write_markdown
 from .metrics import round_metrics
 from .models import FileConversionResult
-from .pdf_ocr_pipeline import run_conversion_pipeline
+from .pdf_ocr_pipeline import APP_DEFAULT_PROMPT, run_conversion_pipeline
 
 
 def output_markdown_path_for_pdf(pdf_path: Path) -> Path:
@@ -23,15 +23,15 @@ def convert_pdf_to_markdown(pdf_path: Path, config: AppConfig) -> FileConversion
     output_path = output_markdown_path_for_pdf(pdf_path)
 
     try:
-        pages_data, answer, metrics = run_conversion_pipeline(pdf_path=pdf_path, config=config)
-        legacy = load_legacy_module()
-        legacy.write_markdown(
+        pages_data, summary, page_answers, metrics = run_conversion_pipeline(pdf_path=pdf_path, config=config)
+        write_markdown(
             output_path=output_path,
             pdf_path=pdf_path,
             model=config.model,
-            prompt=legacy.DEFAULT_PROMPT,
+            prompt=APP_DEFAULT_PROMPT,
             pages_data=pages_data,
-            answer=answer,
+            summary=summary,
+            page_answers=page_answers,
         )
         metrics = round_metrics(metrics)
         metrics["total_runtime_seconds"] = round(time.perf_counter() - start, 4)

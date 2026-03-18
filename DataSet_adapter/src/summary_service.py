@@ -4,13 +4,12 @@ from __future__ import annotations
 
 import json
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 
 from .config import AppConfig
-from .legacy_bridge import load_legacy_module
 from .metrics import round_metrics
 from .models import FileConversionResult
+from .ollama_client import call_ollama_chat
 
 
 def _compute_uncertain_points(metrics: dict[str, Any], status: str) -> list[str]:
@@ -48,7 +47,6 @@ def _build_ai_summary(
     result: FileConversionResult,
     config: AppConfig,
 ) -> str:
-    legacy = load_legacy_module()
     content = (
         "Produis un resume markdown concis des incertitudes OCR.\n"
         "Concentre-toi uniquement sur les zones potentiellement fausses ou ambigues.\n"
@@ -62,7 +60,7 @@ def _build_ai_summary(
         f"JSON metriques: {json.dumps(result.metrics, ensure_ascii=True)}"
     )
     try:
-        return legacy.call_ollama(
+        return call_ollama_chat(
             ollama_url=config.ollama_url,
             model=config.resolved_summary_model(),
             content=content,
