@@ -138,7 +138,7 @@ root_path = Path(root_input).expanduser()
 
 scan_col, run_col, clean_col = st.columns(3)
 
-if scan_col.button("Scan PDFs", use_container_width=True):
+if scan_col.button("Scan PDFs", width='stretch'):
     try:
         pdfs = discover_pdfs(root_path)
         st.session_state["scan_results"] = pdfs
@@ -154,7 +154,7 @@ if scan_results:
     st.caption(
         f"Queue status: pending={len(pending_queue)} | already generated={len(already_generated)}"
     )
-    st.dataframe({"pdf_path": [str(p) for p in scan_results]}, use_container_width=True)
+    st.dataframe({"pdf_path": [str(p) for p in scan_results]}, width='stretch')
 else:
     already_generated = []
     pending_queue = []
@@ -182,7 +182,7 @@ with st.expander("Delete Generated Files"):
             help="Only generated markdown files next to these PDFs will be deleted.",
         )
 
-        if clean_col.button("Delete Selected .md", use_container_width=True):
+        if clean_col.button("Delete Selected .md", width='stretch'):
             if not _selected_for_delete:
                 st.warning("Select at least one PDF to delete generated files.")
             else:
@@ -201,7 +201,7 @@ with st.expander("Delete Generated Files"):
                 if delete_errors:
                     st.error("\n".join(delete_errors[:10]))
 
-if run_col.button("Run Conversion", use_container_width=True):
+if run_col.button("Run Conversion", width='stretch'):
     logs: list[str] = []
     progress_bar = st.progress(0)
     status_box = st.empty()
@@ -329,7 +329,7 @@ if _cmp_pdf_str:
                     _pix = _page.get_pixmap(matrix=_mat)
                     _img_bytes = _pix.tobytes("png")
                     _doc.close()
-                    st.image(_img_bytes, use_container_width=True)
+                    st.image(_img_bytes, width='stretch')
                 except Exception as _e:
                     st.error(f"Erreur de rendu : {_e}")
 

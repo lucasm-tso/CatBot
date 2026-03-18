@@ -136,16 +136,16 @@ if run_btn and uploaded is not None:
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.markdown('**1) Original**')
-                st.image(page_rgb, use_container_width=True)
+                st.image(page_rgb, width='stretch')
             with c2:
                 st.markdown('**2) Gray**')
-                st.image(pre['gray'], clamp=True, use_container_width=True)
+                st.image(pre['gray'], clamp=True, width='stretch')
             with c3:
                 st.markdown('**3) Denoised**')
-                st.image(pre['denoise'], clamp=True, use_container_width=True)
+                st.image(pre['denoise'], clamp=True, width='stretch')
             with c4:
                 st.markdown('**4) Binary (Otsu)**')
-                st.image(pre['binary'], clamp=True, use_container_width=True)
+                st.image(pre['binary'], clamp=True, width='stretch')
 
             page_dir = base_tmp / f'page_{i:02d}'
             page_dir.mkdir(parents=True, exist_ok=True)
@@ -174,7 +174,7 @@ if run_btn and uploaded is not None:
                 img_cols = st.columns(min(3, len(model_out['images'])))
                 for idx, p in enumerate(model_out['images'][:6]):
                     with img_cols[idx % len(img_cols)]:
-                        st.image(str(p), caption=p.name, use_container_width=True)
+                        st.image(str(p), caption=p.name, width='stretch')
 
             if model_out['json_files']:
                 st.markdown('**8) JSON outputs**')
