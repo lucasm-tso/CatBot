@@ -17,11 +17,13 @@ class AppConfig:
     stream: bool = True
     show_thinking: bool = True
     guided_zoom: bool = True
+    use_page_images_in_review: bool = True
 
     dpi: int = 600
     lang: str = "en"
     final_timeout: int = 180
     review_batch_size: int = 1
+    review_image_max_side: int = 2400
     connect_timeout: int = 15
     read_timeout: int = 900
 

@@ -7,7 +7,13 @@ from typing import Any
 
 from .config import AppConfig
 from .markdown_service import build_model_input
-from .ocr_service import extract_text_by_page, extract_text_by_page_with_qwen_ocr
+from .ocr_service import (
+    extract_text_by_page,
+    extract_text_by_page_with_qwen_ocr,
+    image_to_base64_png,
+    render_page_to_image,
+    resize_for_vision,
+)
 from .ollama_client import call_ollama_chat
 import fitz
 
@@ -98,6 +104,25 @@ def _build_document_summary(
     return "\n\n".join(chunk_summaries).strip()
 
 
+def _build_review_image_payload(
+    review_doc: fitz.Document,
+    page_no: str,
+    config: AppConfig,
+    metrics: dict[str, Any],
+) -> list[str] | None:
+    """Build base64 image payload for page-level clean review."""
+    try:
+        page_idx = max(0, int(page_no) - 1)
+        page = review_doc.load_page(page_idx)
+        page_image = render_page_to_image(page=page, dpi=config.dpi)
+        prepared = resize_for_vision(page_image, max_side=config.review_image_max_side)
+        metrics["review_images_sent"] = int(metrics.get("review_images_sent", 0)) + 1
+        return [image_to_base64_png(prepared)]
+    except Exception:  # noqa: BLE001
+        metrics["review_image_build_failures"] = int(metrics.get("review_image_build_failures", 0)) + 1
+        return None
+
+
 def run_conversion_pipeline(
     pdf_path: Path,
     config: AppConfig,
@@ -143,20 +168,38 @@ def run_conversion_pipeline(
         metrics["pages_processed"] = len(pages_data)
 
     page_answers: list[dict[str, str]] = []
-    for idx, page_entry in enumerate(pages_data, start=1):
-        page_no = _safe_page_no(page_entry, fallback=idx)
-        page_input = build_model_input(prompt=APP_DEFAULT_PROMPT, pages_data=[page_entry])
-        page_answer = call_ollama_chat(
-            ollama_url=config.ollama_url,
-            model=config.model,
-            content=page_input,
-            timeout_s=config.final_timeout,
-            stream=config.stream,
-            show_thinking=config.show_thinking,
-            metrics=metrics,
-            call_label="page_reasoning",
-        )
-        page_answers.append({"page": page_no, "answer": page_answer})
+    review_doc: fitz.Document | None = None
+    if config.use_page_images_in_review:
+        review_doc = fitz.open(pdf_path)
+
+    try:
+        for idx, page_entry in enumerate(pages_data, start=1):
+            page_no = _safe_page_no(page_entry, fallback=idx)
+            page_input = build_model_input(prompt=APP_DEFAULT_PROMPT, pages_data=[page_entry])
+            review_images = None
+            if review_doc is not None:
+                review_images = _build_review_image_payload(
+                    review_doc=review_doc,
+                    page_no=page_no,
+                    config=config,
+                    metrics=metrics,
+                )
+
+            page_answer = call_ollama_chat(
+                ollama_url=config.ollama_url,
+                model=config.model,
+                content=page_input,
+                timeout_s=config.final_timeout,
+                stream=config.stream,
+                show_thinking=config.show_thinking,
+                metrics=metrics,
+                call_label="page_reasoning",
+                images=review_images,
+            )
+            page_answers.append({"page": page_no, "answer": page_answer})
+    finally:
+        if review_doc is not None:
+            review_doc.close()
 
     document_summary = _build_document_summary(
         page_answers=page_answers,

@@ -99,6 +99,11 @@ with st.sidebar:
     stream = st.checkbox("Stream output", value=True)
     show_thinking = st.checkbox("Show thinking", value=True)
     guided_zoom = st.checkbox("Guided zoom", value=True)
+    use_page_images_in_review = st.checkbox(
+        "Use full page image in clean review",
+        value=True,
+        help="When enabled, the final page clean review sees the full page image in addition to OCR text.",
+    )
     skip_generated = st.checkbox(
         "Skip already generated PDFs",
         value=True,
@@ -114,6 +119,14 @@ with st.sidebar:
             value=1,
             step=1,
             help="Pages grouped per clean review call. Lower values are safer for very long documents.",
+        )
+        review_image_max_side = st.number_input(
+            "Review image max side (px)",
+            min_value=800,
+            max_value=5000,
+            value=2400,
+            step=200,
+            help="Image downscale limit sent to the review model. Higher improves details but costs more VRAM/time.",
         )
         connect_timeout = st.number_input("Connect timeout (s)", min_value=1, max_value=120, value=15)
         read_timeout = st.number_input("Read timeout (s)", min_value=30, max_value=7200, value=900)
@@ -211,8 +224,10 @@ if run_col.button("Run Conversion", use_container_width=True):
         stream=stream,
         show_thinking=show_thinking,
         guided_zoom=guided_zoom,
+        use_page_images_in_review=use_page_images_in_review,
         dpi=int(dpi),
         review_batch_size=int(review_batch_size),
+        review_image_max_side=int(review_image_max_side),
         connect_timeout=int(connect_timeout),
         read_timeout=int(read_timeout),
         final_timeout=int(final_timeout),

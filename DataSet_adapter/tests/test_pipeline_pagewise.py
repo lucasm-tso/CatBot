@@ -47,7 +47,12 @@ def test_run_conversion_pipeline_uses_one_page_calls(monkeypatch: Any) -> None:
     monkeypatch.setattr(pipeline, "extract_text_by_page", fake_extract_text_by_page)
     monkeypatch.setattr(pipeline, "call_ollama_chat", fake_call_ollama_chat)
 
-    config = AppConfig(ocr_engine="paddle", stream=False, show_thinking=False)
+    config = AppConfig(
+        ocr_engine="paddle",
+        stream=False,
+        show_thinking=False,
+        use_page_images_in_review=False,
+    )
     pages_data, summary, page_answers, metrics = pipeline.run_conversion_pipeline(
         pdf_path=Path("dummy.pdf"),
         config=config,
