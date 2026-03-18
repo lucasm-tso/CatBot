@@ -24,14 +24,15 @@ def run_batch_conversion(
     config: AppConfig,
     progress_cb: ProgressCallback | None = None,
     log_cb: LogCallback | None = None,
+    pdf_paths: list[Path] | None = None,
 ) -> BatchRunResult:
     """Run sequential conversion for all discovered PDFs under root folder."""
     started_at = datetime.now()
-    pdf_paths = discover_pdfs(root_folder)
+    queue = pdf_paths if pdf_paths is not None else discover_pdfs(root_folder)
     results: list[FileConversionResult] = []
 
-    total = len(pdf_paths)
-    for idx, pdf_path in enumerate(pdf_paths, start=1):
+    total = len(queue)
+    for idx, pdf_path in enumerate(queue, start=1):
         if progress_cb is not None:
             progress_cb(idx, total, pdf_path)
         if log_cb is not None:
