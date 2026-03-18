@@ -64,6 +64,14 @@ with st.sidebar:
 
     with st.expander("Advanced"):
         dpi = st.number_input("DPI", min_value=100, max_value=1200, value=600, step=50)
+        review_batch_size = st.number_input(
+            "Review batch size (pages)",
+            min_value=1,
+            max_value=8,
+            value=1,
+            step=1,
+            help="Pages grouped per clean review call. Lower values are safer for very long documents.",
+        )
         connect_timeout = st.number_input("Connect timeout (s)", min_value=1, max_value=120, value=15)
         read_timeout = st.number_input("Read timeout (s)", min_value=30, max_value=7200, value=900)
         final_timeout = st.number_input("Final reasoning timeout (s)", min_value=30, max_value=1800, value=180)
@@ -110,6 +118,7 @@ if run_col.button("Run Conversion", use_container_width=True):
         show_thinking=show_thinking,
         guided_zoom=guided_zoom,
         dpi=int(dpi),
+        review_batch_size=int(review_batch_size),
         connect_timeout=int(connect_timeout),
         read_timeout=int(read_timeout),
         final_timeout=int(final_timeout),

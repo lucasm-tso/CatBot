@@ -61,6 +61,9 @@ def test_run_conversion_pipeline_uses_one_page_calls(monkeypatch: Any) -> None:
         "page-3-answer",
     ]
     assert calls.count("page_reasoning") == 3
-    assert calls.count("summary_chunk") == 1
+    assert calls.count("summary_chunk") == 3
     assert calls.count("final_reasoning") == 0
     assert metrics["pages_processed"] == 3
+    assert "--- PAGE BATCH 1/3 (pages 1-1) ---" in summary
+    assert "--- PAGE BATCH 2/3 (pages 2-2) ---" in summary
+    assert "--- PAGE BATCH 3/3 (pages 3-3) ---" in summary

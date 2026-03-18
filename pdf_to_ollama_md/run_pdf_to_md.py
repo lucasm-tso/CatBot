@@ -897,6 +897,92 @@ def build_model_input(prompt: str, pages_data: list[dict[str, str]]) -> str:
     return "\n".join(parts).strip()
 
 
+def build_batch_review_input(
+    prompt: str,
+    pages_data: list[dict[str, str]],
+    batch_index: int,
+    total_batches: int,
+) -> str:
+    """Build a bounded prompt for a page batch to avoid context loss on long PDFs."""
+    base = build_model_input(prompt=prompt, pages_data=pages_data)
+    header = (
+        f"Tu traites un lot de pages ({batch_index}/{total_batches}).\n"
+        "Rends une transcription Markdown fidele de ces pages uniquement.\n"
+        "Ne fais pas de resume et n'omet aucune section visible.\n"
+    )
+    return f"{header}\n{base}".strip()
+
+
+def _safe_page(entry: dict[str, str], fallback: int) -> str:
+    page = str(entry.get("page", "")).strip()
+    return page if page else str(fallback)
+
+
+def generate_answer_in_batches(
+    ollama_url: str,
+    model: str,
+    prompt_text: str,
+    pages_data: list[dict[str, str]],
+    timeout_s: int,
+    stream: bool,
+    show_thinking: bool,
+    metrics: dict[str, Any],
+    batch_size: int,
+) -> str:
+    """Generate long-document output in batches and merge deterministically by page order."""
+    if not pages_data:
+        return ""
+
+    if batch_size <= 0:
+        raise ValueError("batch_size must be >= 1")
+
+    total = len(pages_data)
+    if total <= batch_size:
+        model_input = build_model_input(prompt=prompt_text, pages_data=pages_data)
+        return call_ollama(
+            ollama_url=ollama_url,
+            model=model,
+            content=model_input,
+            timeout_s=timeout_s,
+            stream=stream,
+            show_thinking=show_thinking,
+            metrics=metrics,
+            call_label="final_reasoning",
+        )
+
+    merged_parts: list[str] = []
+    total_batches = (total + batch_size - 1) // batch_size
+
+    for idx in range(0, total, batch_size):
+        chunk = pages_data[idx : idx + batch_size]
+        batch_no = (idx // batch_size) + 1
+        first_page = _safe_page(chunk[0], fallback=idx + 1)
+        last_page = _safe_page(chunk[-1], fallback=min(total, idx + batch_size))
+
+        batch_input = build_batch_review_input(
+            prompt=prompt_text,
+            pages_data=chunk,
+            batch_index=batch_no,
+            total_batches=total_batches,
+        )
+        batch_answer = call_ollama(
+            ollama_url=ollama_url,
+            model=model,
+            content=batch_input,
+            timeout_s=timeout_s,
+            stream=stream,
+            show_thinking=show_thinking,
+            metrics=metrics,
+            call_label="batch_reasoning",
+        ).strip()
+        merged_parts.append(
+            f"--- PAGE BATCH {batch_no}/{total_batches} (pages {first_page}-{last_page}) ---\n\n"
+            f"{batch_answer if batch_answer else '[Empty response]'}"
+        )
+
+    return "\n\n".join(merged_parts).strip()
+
+
 def call_ollama(
     ollama_url: str,
     model: str,
@@ -1090,6 +1176,15 @@ def main() -> None:
         help="HTTP timeout in seconds for Ollama call (default: 180)",
     )
     parser.add_argument(
+        "--review-batch-size",
+        type=int,
+        default=1,
+        help=(
+            "Number of pages per final review call. "
+            "Use 1-4 for very long PDFs to avoid missing first pages (default: 1)"
+        ),
+    )
+    parser.add_argument(
         "--connect-timeout",
         type=int,
         default=15,
@@ -1232,16 +1327,16 @@ def main() -> None:
         metrics_inc(metrics, "pages_processed", len(pages_data))
         metrics_add_time(metrics, "paddle_ocr_seconds", time.perf_counter() - paddle_start)
 
-    model_input = build_model_input(prompt=prompt_text, pages_data=pages_data)
-    answer = call_ollama(
+    answer = generate_answer_in_batches(
         ollama_url=args.ollama_url,
         model=args.model,
-        content=model_input,
+        prompt_text=prompt_text,
+        pages_data=pages_data,
         timeout_s=args.timeout,
         stream=args.stream,
         show_thinking=args.show_thinking,
         metrics=metrics,
-        call_label="final_reasoning",
+        batch_size=args.review_batch_size,
     )
 
     write_markdown(

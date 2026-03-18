@@ -20,9 +20,6 @@ APP_DEFAULT_PROMPT = (
     "sans inventer d'information absente."
 )
 
-SUMMARY_CHUNK_SIZE = 8
-
-
 def _safe_page_no(entry: dict[str, str], fallback: int) -> str:
     page_no = str(entry.get("page", "")).strip()
     return page_no if page_no else str(fallback)
@@ -35,10 +32,10 @@ def _summarize_chunk(
     chunk_index: int,
 ) -> str:
     parts = [
-        "Tu recois des transcriptions markdown page par page.",
-        "Produis un resume fidele de ce lot de pages.",
-        "Conserve les points techniques, chiffres, references de plans et sections importantes.",
-        "Reste concis (6-14 puces max) et ecris en Markdown.",
+        "Tu recois des transcriptions OCR page par page.",
+        "Produis une version nettoyee en Markdown de ce lot de pages.",
+        "Reste tres fidele au contenu et a la structure.",
+        "N'omets aucune section visible et n'invente rien.",
         "",
         f"Lot de pages {chunk_index} :",
     ]
@@ -68,42 +65,37 @@ def _build_document_summary(
     if not page_answers:
         return "[Empty summary]"
 
+    chunk_size = max(1, int(config.review_batch_size))
+
+    if len(page_answers) <= chunk_size:
+        return _summarize_chunk(
+            page_answers=page_answers,
+            config=config,
+            metrics=metrics,
+            chunk_index=1,
+        ).strip() or "[Empty chunk summary 1]"
+
     chunk_summaries: list[str] = []
-    for idx in range(0, len(page_answers), SUMMARY_CHUNK_SIZE):
-        chunk = page_answers[idx : idx + SUMMARY_CHUNK_SIZE]
-        chunk_number = (idx // SUMMARY_CHUNK_SIZE) + 1
+    total_pages = len(page_answers)
+    total_chunks = (total_pages + chunk_size - 1) // chunk_size
+
+    for idx in range(0, total_pages, chunk_size):
+        chunk = page_answers[idx : idx + chunk_size]
+        chunk_number = (idx // chunk_size) + 1
+        first_page = _safe_page_no(chunk[0], fallback=idx + 1)
+        last_page = _safe_page_no(chunk[-1], fallback=min(total_pages, idx + chunk_size))
         chunk_summary = _summarize_chunk(
             page_answers=chunk,
             config=config,
             metrics=metrics,
             chunk_index=chunk_number,
         )
-        chunk_summaries.append(chunk_summary.strip() or f"[Empty chunk summary {chunk_number}]")
+        cleaned = chunk_summary.strip() or f"[Empty chunk summary {chunk_number}]"
+        chunk_summaries.append(
+            f"--- PAGE BATCH {chunk_number}/{total_chunks} (pages {first_page}-{last_page}) ---\n\n{cleaned}"
+        )
 
-    if len(chunk_summaries) == 1:
-        return chunk_summaries[0]
-
-    final_parts = [
-        "Tu recois des resumes partiels d'un document PDF.",
-        "Produis un resume global propre et coherent en Markdown.",
-        "Inclure : 1) structure du document, 2) points techniques majeurs, 3) references importantes, 4) risques/ambiguities.",
-        "N'invente aucune information.",
-        "",
-        "Resumes partiels :",
-    ]
-    for idx, chunk_summary in enumerate(chunk_summaries, start=1):
-        final_parts.append(f"\n--- CHUNK {idx} ---\n{chunk_summary}")
-
-    return call_ollama_chat(
-        ollama_url=config.ollama_url,
-        model=config.model,
-        content="\n".join(final_parts).strip(),
-        timeout_s=config.final_timeout,
-        stream=config.stream,
-        show_thinking=config.show_thinking,
-        metrics=metrics,
-        call_label="final_reasoning",
-    )
+    return "\n\n".join(chunk_summaries).strip()
 
 
 def run_conversion_pipeline(

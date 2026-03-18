@@ -21,6 +21,7 @@ class AppConfig:
     dpi: int = 600
     lang: str = "en"
     final_timeout: int = 180
+    review_batch_size: int = 1
     connect_timeout: int = 15
     read_timeout: int = 900
 
